@@ -8,6 +8,13 @@ object TimerState {
     var isBreakEnabled by mutableStateOf(true)
     var isLockoutEnabled by mutableStateOf(false)
     
+    // Focus Assistant Settings
+    var isFocusAssistantEnabled by mutableStateOf(false)
+    var postureSensitivity by mutableFloatStateOf(0.5f)
+    var attentivenessStatus by mutableStateOf("Ready")
+    var isUserInattentive by mutableStateOf(false)
+    var isPostureBad by mutableStateOf(false)
+    
     var isRunning by mutableStateOf(false)
     var isBreakMode by mutableStateOf(false)
     

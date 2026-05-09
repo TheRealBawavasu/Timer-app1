@@ -1,16 +1,22 @@
 package com.example.timerapp
 
+import android.Manifest
 import android.app.AppOpsManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -28,6 +35,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.timerapp.ui.theme.AppTheme
 import com.example.timerapp.ui.theme.TimerAppTheme
 import kotlinx.coroutines.delay
@@ -44,6 +53,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        createNotificationChannel()
         setContent {
             var currentAppTheme by remember { mutableStateOf(AppTheme.Default) }
             var showOnboarding by remember { mutableStateOf(false) }
@@ -66,6 +76,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val cameraPermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { isGranted ->
+                if (isGranted) {
+                    TimerState.isFocusAssistantEnabled = true
+                }
+            }
+
             TimerAppTheme(appTheme = currentAppTheme) {
                 var currentScreen by remember { mutableStateOf("timer") }
                 
@@ -78,7 +96,8 @@ class MainActivity : ComponentActivity() {
                         SettingsScreen(
                             currentTheme = currentAppTheme,
                             onThemeChange = { currentAppTheme = it },
-                            onBack = { currentScreen = "timer" }
+                            onBack = { currentScreen = "timer" },
+                            onRequestCamera = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
                         )
                     }
                 }
@@ -91,6 +110,21 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "lockout_channel",
+                "Timer App Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts for focus mode and app lockout"
+                enableVibration(true)
+            }
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
         }
     }
 }
@@ -154,7 +188,19 @@ fun TimerScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 ),
-                title = { Text(if (TimerState.isBreakMode) "Break Time" else "Focus Time") },
+                title = { 
+                    Column {
+                        Text(if (TimerState.isBreakMode) "Break Time" else "Focus Time")
+                        if (TimerState.isFocusAssistantEnabled) {
+                            Text(
+                                text = "Assistant: ${TimerState.attentivenessStatus}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (TimerState.isUserInattentive || TimerState.isPostureBad) 
+                                        MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -170,6 +216,17 @@ fun TimerScreen(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            if (TimerState.isFocusAssistantEnabled) {
+                Box(
+                    modifier = Modifier
+                        .padding(bottom = 24.dp)
+                        .size(120.dp, 160.dp)
+                        .clip(MaterialTheme.shapes.medium)
+                ) {
+                    FocusAssistant(modifier = Modifier.fillMaxSize())
+                }
+            }
+
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.size(300.dp)
@@ -349,7 +406,8 @@ fun TimeInputDialog(
 fun SettingsScreen(
     currentTheme: AppTheme,
     onThemeChange: (AppTheme) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onRequestCamera: () -> Unit = {}
 ) {
     var showBreakDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -516,6 +574,61 @@ fun SettingsScreen(
                         colors = if (hasOverlay) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
                     ) {
                         Text(if (hasOverlay) "Overlay: Granted" else "Grant Overlay Permission")
+                    }
+                }
+            }
+
+            HorizontalDivider()
+
+            // Focus Assistant Section
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                
+                Text("Focus Assistant", style = MaterialTheme.typography.titleLarge)
+                
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("AI Posture & Attentiveness")
+                        Text(
+                            "Monitors you via camera and nudges if you slump or look away.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                    Switch(
+                        checked = TimerState.isFocusAssistantEnabled,
+                        onCheckedChange = { 
+                            if (hasCamera) {
+                                TimerState.isFocusAssistantEnabled = it
+                            } else {
+                                onRequestCamera()
+                            }
+                        }
+                    )
+                }
+
+                if (TimerState.isFocusAssistantEnabled) {
+                    Column {
+                        Text("Sensitivity", style = MaterialTheme.typography.labelMedium)
+                        Slider(
+                            value = TimerState.postureSensitivity,
+                            onValueChange = { TimerState.postureSensitivity = it },
+                            valueRange = 0f..1f
+                        )
+                    }
+                }
+
+                if (!hasCamera) {
+                    Button(
+                        onClick = { onRequestCamera() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Grant Camera Permission")
                     }
                 }
             }
