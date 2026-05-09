@@ -27,6 +27,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -45,10 +46,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             var currentAppTheme by remember { mutableStateOf(AppTheme.Default) }
-            var focusTimeMinutes by remember { mutableIntStateOf(30) }
-            var breakTimeMinutes by remember { mutableIntStateOf(5) }
-            var isBreakEnabled by remember { mutableStateOf(true) }
-            var isLockoutEnabled by remember { mutableStateOf(false) }
             var showOnboarding by remember { mutableStateOf(false) }
             
             val context = LocalContext.current
@@ -60,9 +57,9 @@ class MainActivity : ComponentActivity() {
                 }
             }
             
-            // Sync lockout service state
-            LaunchedEffect(isLockoutEnabled) {
-                if (isLockoutEnabled) {
+            // Sync lockout service lifecycle
+            LaunchedEffect(TimerState.isLockoutEnabled) {
+                if (TimerState.isLockoutEnabled) {
                     LockoutService.startService(context)
                 } else {
                     LockoutService.stopService(context)
@@ -75,23 +72,12 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     if (currentScreen == "timer") {
                         TimerScreen(
-                            focusTimeMinutes = focusTimeMinutes,
-                            breakTimeMinutes = breakTimeMinutes,
-                            isBreakEnabled = isBreakEnabled,
-                            isLockoutEnabled = isLockoutEnabled,
-                            onOpenSettings = { currentScreen = "settings" },
-                            onTimeUpdate = { newFocusTime -> focusTimeMinutes = newFocusTime }
+                            onOpenSettings = { currentScreen = "settings" }
                         )
                     } else {
                         SettingsScreen(
                             currentTheme = currentAppTheme,
                             onThemeChange = { currentAppTheme = it },
-                            breakTime = breakTimeMinutes,
-                            onBreakTimeChange = { breakTimeMinutes = it },
-                            isBreakEnabled = isBreakEnabled,
-                            onBreakEnabledChange = { isBreakEnabled = it },
-                            isLockoutEnabled = isLockoutEnabled,
-                            onLockoutEnabledChange = { isLockoutEnabled = it },
                             onBack = { currentScreen = "timer" }
                         )
                     }
@@ -141,54 +127,23 @@ fun OnboardingDialog(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TimerScreen(
-    focusTimeMinutes: Int,
-    breakTimeMinutes: Int,
-    isBreakEnabled: Boolean,
-    isLockoutEnabled: Boolean,
     onOpenSettings: () -> Unit,
-    onTimeUpdate: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var isBreakMode by remember { mutableStateOf(false) }
-    val initialTime = (if (isBreakMode) breakTimeMinutes else focusTimeMinutes) * 60000L
-    
-    var totalTime by remember(focusTimeMinutes, breakTimeMinutes, isBreakMode) { 
-        mutableLongStateOf(initialTime) 
-    }
-    var timeLeft by remember(focusTimeMinutes, breakTimeMinutes, isBreakMode) { 
-        mutableLongStateOf(initialTime) 
-    }
-    var isRunning by remember { mutableStateOf(value = false) }
     var showTimeInputDialog by remember { mutableStateOf(false) }
-
-    // Sync focus state to lockout service
-    LaunchedEffect(isLockoutEnabled, isRunning, isBreakMode) {
-        if (isLockoutEnabled) {
-            // Lock if Focus mode active (isBreakMode = false) 
-            // OR if timer not running (as requested)
-            LockoutService.isFocusModeActive = !isBreakMode
-        } else {
-            LockoutService.isFocusModeActive = false
-        }
-    }
-
+    
+    // Smooth progress animation
+    val initialTimeMillis = (if (TimerState.isBreakMode) TimerState.breakTimeMinutes else TimerState.focusTimeMinutes) * 60000L
     val progress by animateFloatAsState(
-        targetValue = if (totalTime > 0) timeLeft.toFloat() / totalTime.toFloat() else 0f,
+        targetValue = if (initialTimeMillis > 0) TimerState.timeLeftMillis.toFloat() / initialTimeMillis.toFloat() else 0f,
         label = "TimerProgress",
     )
 
-    LaunchedEffect(isRunning, timeLeft) {
-        if (isRunning && (timeLeft > 0)) {
-            delay(100L)
-            timeLeft -= 100L
-        } else if (isRunning) {
-            if (isBreakEnabled && !isBreakMode) {
-                isBreakMode = true
-            } else {
-                isRunning = false
-                isBreakMode = false
-                timeLeft = initialTime
-            }
+    // Local UI tick (the service handles the official sync)
+    LaunchedEffect(TimerState.isRunning) {
+        while (TimerState.isRunning) {
+            delay(500L)
+            TimerState.syncTime()
         }
     }
 
@@ -199,7 +154,7 @@ fun TimerScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 ),
-                title = { Text(if (isBreakMode) "Break Time" else "Focus Time") },
+                title = { Text(if (TimerState.isBreakMode) "Break Time" else "Focus Time") },
                 actions = {
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -229,17 +184,19 @@ fun TimerScreen(
                 CircularProgressIndicator(
                     progress = { progress },
                     modifier = Modifier.fillMaxSize(),
-                    color = if (isBreakMode) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                    color = if (TimerState.isBreakMode) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
                     strokeWidth = 12.dp,
                     strokeCap = StrokeCap.Round,
                 )
 
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.clickable { if (!isRunning && !isBreakMode) showTimeInputDialog = true }
+                    modifier = Modifier.clickable { 
+                        if (!TimerState.isRunning && !TimerState.isBreakMode) showTimeInputDialog = true 
+                    }
                 ) {
-                    val hours = (timeLeft / 3600000)
-                    val minutes = (timeLeft % 3600000) / 60000
+                    val hours = (TimerState.timeLeftMillis / 3600000)
+                    val minutes = (TimerState.timeLeftMillis % 3600000) / 60000
                     
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -280,7 +237,7 @@ fun TimerScreen(
                         }
                     }
                     
-                    if (!isRunning && !isBreakMode) {
+                    if (!TimerState.isRunning && !TimerState.isBreakMode) {
                         Spacer(Modifier.height(8.dp))
                         Text(
                             text = "Tap to edit",
@@ -298,25 +255,23 @@ fun TimerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 FilledTonalIconButton(
-                    onClick = {
-                        isRunning = false
-                        isBreakMode = false
-                        timeLeft = focusTimeMinutes * 60000L
-                    },
+                    onClick = { TimerState.reset() },
                     modifier = Modifier.size(64.dp)
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = "Reset")
                 }
 
                 Button(
-                    onClick = { isRunning = !isRunning },
+                    onClick = { 
+                        if (TimerState.isRunning) TimerState.pause() else TimerState.start()
+                    },
                     modifier = Modifier.size(80.dp),
                     shape = MaterialTheme.shapes.large,
-                    colors = if (isBreakMode) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary) else ButtonDefaults.buttonColors()
+                    colors = if (TimerState.isBreakMode) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary) else ButtonDefaults.buttonColors()
                 ) {
                     Icon(
-                        imageVector = if (isRunning) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isRunning) "Pause" else "Start",
+                        imageVector = if (TimerState.isRunning) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (TimerState.isRunning) "Pause" else "Start",
                         modifier = Modifier.size(40.dp)
                     )
                 }
@@ -326,11 +281,12 @@ fun TimerScreen(
 
     if (showTimeInputDialog) {
         TimeInputDialog(
-            initialHours = (focusTimeMinutes / 60),
-            initialMinutes = (focusTimeMinutes % 60),
+            initialHours = (TimerState.focusTimeMinutes / 60),
+            initialMinutes = (TimerState.focusTimeMinutes % 60),
             onDismiss = { showTimeInputDialog = false },
             onConfirm = { h, m ->
-                onTimeUpdate(h * 60 + m)
+                TimerState.focusTimeMinutes = h * 60 + m
+                TimerState.reset() // Update current time left
                 showTimeInputDialog = false
             }
         )
@@ -393,12 +349,6 @@ fun TimeInputDialog(
 fun SettingsScreen(
     currentTheme: AppTheme,
     onThemeChange: (AppTheme) -> Unit,
-    breakTime: Int,
-    onBreakTimeChange: (Int) -> Unit,
-    isBreakEnabled: Boolean,
-    onBreakEnabledChange: (Boolean) -> Unit,
-    isLockoutEnabled: Boolean,
-    onLockoutEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
     var showBreakDialog by remember { mutableStateOf(false) }
@@ -456,9 +406,12 @@ fun SettingsScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Auto-Break Mode")
                     Spacer(Modifier.weight(1f))
-                    Switch(checked = isBreakEnabled, onCheckedChange = onBreakEnabledChange)
+                    Switch(
+                        checked = TimerState.isBreakEnabled, 
+                        onCheckedChange = { TimerState.isBreakEnabled = it }
+                    )
                 }
-                if (isBreakEnabled) {
+                if (TimerState.isBreakEnabled) {
                     Spacer(Modifier.height(8.dp))
                     Card(
                         onClick = { showBreakDialog = true },
@@ -474,7 +427,7 @@ fun SettingsScreen(
                         ) {
                             Column {
                                 Text("Break Duration", style = MaterialTheme.typography.labelMedium)
-                                Text("$breakTime min", style = MaterialTheme.typography.bodyLarge)
+                                Text("${TimerState.breakTimeMinutes} min", style = MaterialTheme.typography.bodyLarge)
                             }
                             Spacer(Modifier.weight(1f))
                             Text("Tap to change", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
@@ -523,21 +476,20 @@ fun SettingsScreen(
                             )
                         }
                     }
-                    Switch(
-                        checked = isLockoutEnabled && permissionsGranted,
-                        onCheckedChange = { 
+                    Slider(
+                        value = if (TimerState.isLockoutEnabled && permissionsGranted) 1f else 0f,
+                        onValueChange = { 
                             if (permissionsGranted) {
-                                onLockoutEnabledChange(it)
+                                TimerState.isLockoutEnabled = it > 0.5f
                             } else {
                                 if (!hasUsage) requestUsageStatsPermission(context)
                                 else requestOverlayPermission(context)
                             }
                         },
-                        enabled = permissionsGranted,
-                        colors = SwitchDefaults.colors(
-                            disabledThumbColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.38f),
-                            disabledTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.12f)
-                        )
+                        valueRange = 0f..1f,
+                        steps = 0,
+                        modifier = Modifier.width(64.dp),
+                        enabled = permissionsGranted
                     )
                 }
                 
@@ -571,7 +523,7 @@ fun SettingsScreen(
     }
 
     if (showBreakDialog) {
-        var tempBreakTime by remember { mutableStateOf(breakTime.toString()) }
+        var tempBreakTime by remember { mutableStateOf(TimerState.breakTimeMinutes.toString()) }
         AlertDialog(
             onDismissRequest = { showBreakDialog = false },
             title = { Text("Set Break Duration") },
@@ -588,7 +540,7 @@ fun SettingsScreen(
             confirmButton = {
                 Button(onClick = {
                     val b = tempBreakTime.toIntOrNull() ?: 0
-                    onBreakTimeChange(b.coerceIn(1, 15))
+                    TimerState.breakTimeMinutes = b.coerceIn(1, 15)
                     showBreakDialog = false
                 }) { Text("OK") }
             },
@@ -630,6 +582,6 @@ private fun requestOverlayPermission(context: Context) {
 @Composable
 fun TimerPreview() {
     TimerAppTheme {
-        TimerScreen(30, 5, true, false, {}, {})
+        TimerScreen({})
     }
 }

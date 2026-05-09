@@ -4,7 +4,6 @@ import android.app.*
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -15,16 +14,14 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.TextView
 import androidx.core.app.NotificationCompat
-import java.util.*
 
 class LockoutService : Service() {
 
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
     private val handler = Handler(Looper.getMainLooper())
-    private val checkInterval = 1000L // Check every second
+    private val checkInterval = 500L // Faster check for better responsiveness
 
     companion object {
         var isFocusModeActive = false
@@ -77,7 +74,17 @@ class LockoutService : Service() {
     private fun startMonitoring() {
         handler.post(object : Runnable {
             override fun run() {
-                if (isFocusModeActive) {
+                // Update global timer state
+                TimerState.syncTime()
+                
+                // Determine if we should lock based on timer state
+                // Lock if Timer is RUNNING AND we are NOT in Break Mode
+                // Also respect the general lockout toggle
+                val shouldLock = TimerState.isLockoutEnabled && 
+                                 TimerState.isRunning && 
+                                 !TimerState.isBreakMode
+
+                if (shouldLock) {
                     checkForegroundApp()
                 } else {
                     hideOverlay()
@@ -107,15 +114,26 @@ class LockoutService : Service() {
     }
 
     private fun isAppBlocked(packageName: String): Boolean {
-        // Whitelist: Our app, Phone, Dialer, System UI
+        // Whitelist: Our app, Phone, Dialer, System UI, and Music Apps
         val whitelist = listOf(
-            packageName, // Should check if it's our own
+            this.packageName,
             "com.android.phone",
             "com.android.server.telecom",
             "com.google.android.dialer",
             "com.android.dialer",
             "com.android.systemui",
-            "com.example.timerapp"
+            "com.android.settings", // Allow settings so user can't get permanently stuck
+            
+            // Music Apps
+            "com.spotify.music",
+            "com.google.android.apps.youtube.music",
+            "apple.music",
+            "com.apple.android.music",
+            "com.amazon.mp3",
+            "com.pandora.android",
+            "com.soundcloud.android",
+            "com.tidal.android",
+            "com.deezer.android"
         )
         return packageName !in whitelist
     }
