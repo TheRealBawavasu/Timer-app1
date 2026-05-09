@@ -1,6 +1,8 @@
 package com.example.timerapp
 
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 
 object TimerState {
     var focusTimeMinutes by mutableIntStateOf(30)
@@ -20,6 +22,9 @@ object TimerState {
     
     var timeLeftMillis by mutableLongStateOf(30 * 60000L)
     var lastUpdateTimeMillis by mutableLongStateOf(0L)
+    
+    var repository: SessionRepository? = null
+    var scope: kotlinx.coroutines.CoroutineScope? = null
 
     fun syncTime() {
         if (isRunning && lastUpdateTimeMillis > 0) {
@@ -29,6 +34,19 @@ object TimerState {
             lastUpdateTimeMillis = currentTime
             
             if (timeLeftMillis <= 0) {
+                if (!isBreakMode) {
+                    // Log focus session
+                    val duration = focusTimeMinutes
+                    scope?.let {
+                        val repo = repository
+                        if (repo != null) {
+                            it.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                repo.insert(SessionEntity(timestamp = System.currentTimeMillis(), durationMinutes = duration))
+                            }
+                        }
+                    }
+                }
+
                 if (isBreakEnabled && !isBreakMode) {
                     isBreakMode = true
                     timeLeftMillis = breakTimeMinutes * 60000L

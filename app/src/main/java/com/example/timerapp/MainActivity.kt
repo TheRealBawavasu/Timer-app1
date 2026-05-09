@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -59,6 +60,16 @@ class MainActivity : ComponentActivity() {
             var showOnboarding by remember { mutableStateOf(false) }
             
             val context = LocalContext.current
+            val scope = rememberCoroutineScope()
+            
+            // Initialize Database
+            val database = remember { SessionDatabase.getDatabase(context) }
+            val repository = remember { SessionRepository(database.sessionDao()) }
+            
+            LaunchedEffect(Unit) {
+                TimerState.repository = repository
+                TimerState.scope = scope
+            }
 
             // Check for first launch / missing permissions
             LaunchedEffect(Unit) {
@@ -88,17 +99,27 @@ class MainActivity : ComponentActivity() {
                 var currentScreen by remember { mutableStateOf("timer") }
                 
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    if (currentScreen == "timer") {
-                        TimerScreen(
-                            onOpenSettings = { currentScreen = "settings" }
-                        )
-                    } else {
-                        SettingsScreen(
-                            currentTheme = currentAppTheme,
-                            onThemeChange = { currentAppTheme = it },
-                            onBack = { currentScreen = "timer" },
-                            onRequestCamera = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
-                        )
+                    when (currentScreen) {
+                        "timer" -> {
+                            TimerScreen(
+                                onOpenSettings = { currentScreen = "settings" },
+                                onOpenHistory = { currentScreen = "history" }
+                            )
+                        }
+                        "settings" -> {
+                            SettingsScreen(
+                                currentTheme = currentAppTheme,
+                                onThemeChange = { currentAppTheme = it },
+                                onBack = { currentScreen = "timer" },
+                                onRequestCamera = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                            )
+                        }
+                        "history" -> {
+                            HistoryScreen(
+                                repository = repository,
+                                onBack = { currentScreen = "timer" }
+                            )
+                        }
                     }
                 }
 
@@ -162,6 +183,7 @@ fun OnboardingDialog(
 @Composable
 fun TimerScreen(
     onOpenSettings: () -> Unit,
+    onOpenHistory: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showTimeInputDialog by remember { mutableStateOf(false) }
@@ -202,6 +224,9 @@ fun TimerScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenHistory) {
+                        Icon(Icons.Default.History, contentDescription = "History")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -695,6 +720,6 @@ private fun requestOverlayPermission(context: Context) {
 @Composable
 fun TimerPreview() {
     TimerAppTheme {
-        TimerScreen({})
+        TimerScreen(onOpenSettings = {}, onOpenHistory = {})
     }
 }
