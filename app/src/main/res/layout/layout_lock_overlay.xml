@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#E6000000"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="24.dp">
+
+    <TextView
+        android:id="@+id/tv_lock_message"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Back to work!"
+        android:textColor="#FFFFFF"
+        android:textSize="32sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16.dp"
+        android:text="Focus mode is active. Distractions are blocked."
+        android:textAlignment="center"
+        android:textColor="#CCCCCC"
+        android:textSize="18sp" />
+
+    <Button
+        android:id="@+id/btn_back_to_app"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="48.dp"
+        android:text="Return to Timer"
+        android:textAllCaps="false" />
+
+</LinearLayout>

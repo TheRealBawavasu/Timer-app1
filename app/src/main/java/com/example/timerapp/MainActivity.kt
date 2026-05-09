@@ -1,6 +1,13 @@
 package com.example.timerapp
 
+import android.app.AppOpsManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Process
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -21,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -40,7 +48,27 @@ class MainActivity : ComponentActivity() {
             var focusTimeMinutes by remember { mutableIntStateOf(30) }
             var breakTimeMinutes by remember { mutableIntStateOf(5) }
             var isBreakEnabled by remember { mutableStateOf(true) }
+            var isLockoutEnabled by remember { mutableStateOf(false) }
+            var showOnboarding by remember { mutableStateOf(false) }
             
+            val context = LocalContext.current
+
+            // Check for first launch / missing permissions
+            LaunchedEffect(Unit) {
+                if (!hasUsageStatsPermission(context) || !hasOverlayPermission(context)) {
+                    showOnboarding = true
+                }
+            }
+            
+            // Sync lockout service state
+            LaunchedEffect(isLockoutEnabled) {
+                if (isLockoutEnabled) {
+                    LockoutService.startService(context)
+                } else {
+                    LockoutService.stopService(context)
+                }
+            }
+
             TimerAppTheme(appTheme = currentAppTheme) {
                 var currentScreen by remember { mutableStateOf("timer") }
                 
@@ -50,6 +78,7 @@ class MainActivity : ComponentActivity() {
                             focusTimeMinutes = focusTimeMinutes,
                             breakTimeMinutes = breakTimeMinutes,
                             isBreakEnabled = isBreakEnabled,
+                            isLockoutEnabled = isLockoutEnabled,
                             onOpenSettings = { currentScreen = "settings" },
                             onTimeUpdate = { newFocusTime -> focusTimeMinutes = newFocusTime }
                         )
@@ -61,13 +90,52 @@ class MainActivity : ComponentActivity() {
                             onBreakTimeChange = { breakTimeMinutes = it },
                             isBreakEnabled = isBreakEnabled,
                             onBreakEnabledChange = { isBreakEnabled = it },
+                            isLockoutEnabled = isLockoutEnabled,
+                            onLockoutEnabledChange = { isLockoutEnabled = it },
                             onBack = { currentScreen = "timer" }
                         )
                     }
                 }
+
+                if (showOnboarding) {
+                    OnboardingDialog(
+                        onDismiss = { showOnboarding = false },
+                        onGrantUsage = { requestUsageStatsPermission(context) },
+                        onGrantOverlay = { requestOverlayPermission(context) }
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+fun OnboardingDialog(
+    onDismiss: () -> Unit,
+    onGrantUsage: () -> Unit,
+    onGrantOverlay: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Welcome to Timer App") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("To use the Productivity Lockout feature, we need two special permissions:")
+                Text("1. Usage Access: To see which apps are open.", style = MaterialTheme.typography.bodySmall)
+                Text("2. Overlay: To block distracting apps.", style = MaterialTheme.typography.bodySmall)
+                Text("You can grant them now or later in settings.")
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) { Text("Got it") }
+        },
+        dismissButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton(onClick = onGrantUsage) { Text("Grant Usage") }
+                TextButton(onClick = onGrantOverlay) { Text("Grant Overlay") }
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,6 +144,7 @@ fun TimerScreen(
     focusTimeMinutes: Int,
     breakTimeMinutes: Int,
     isBreakEnabled: Boolean,
+    isLockoutEnabled: Boolean,
     onOpenSettings: () -> Unit,
     onTimeUpdate: (Int) -> Unit,
     modifier: Modifier = Modifier
@@ -91,6 +160,17 @@ fun TimerScreen(
     }
     var isRunning by remember { mutableStateOf(value = false) }
     var showTimeInputDialog by remember { mutableStateOf(false) }
+
+    // Sync focus state to lockout service
+    LaunchedEffect(isLockoutEnabled, isRunning, isBreakMode) {
+        if (isLockoutEnabled) {
+            // Lock if Focus mode active (isBreakMode = false) 
+            // OR if timer not running (as requested)
+            LockoutService.isFocusModeActive = !isBreakMode
+        } else {
+            LockoutService.isFocusModeActive = false
+        }
+    }
 
     val progress by animateFloatAsState(
         targetValue = if (totalTime > 0) timeLeft.toFloat() / totalTime.toFloat() else 0f,
@@ -317,9 +397,16 @@ fun SettingsScreen(
     onBreakTimeChange: (Int) -> Unit,
     isBreakEnabled: Boolean,
     onBreakEnabledChange: (Boolean) -> Unit,
+    isLockoutEnabled: Boolean,
+    onLockoutEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit
 ) {
     var showBreakDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    
+    val hasUsage = hasUsageStatsPermission(context)
+    val hasOverlay = hasOverlayPermission(context)
+    val permissionsGranted = hasUsage && hasOverlay
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -401,6 +488,85 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            HorizontalDivider()
+
+            // Lockout Section
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Productivity Lockout", style = MaterialTheme.typography.titleLarge)
+                
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            if (!permissionsGranted) {
+                                if (!hasUsage) requestUsageStatsPermission(context)
+                                else if (!hasOverlay) requestOverlayPermission(context)
+                            }
+                        },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Enable Strict Lockout",
+                            color = if (permissionsGranted) MaterialTheme.colorScheme.onBackground 
+                                    else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.38f)
+                        )
+                        if (!permissionsGranted) {
+                            Text(
+                                text = "Tap to grant permissions",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = isLockoutEnabled && permissionsGranted,
+                        onCheckedChange = { 
+                            if (permissionsGranted) {
+                                onLockoutEnabledChange(it)
+                            } else {
+                                if (!hasUsage) requestUsageStatsPermission(context)
+                                else requestOverlayPermission(context)
+                            }
+                        },
+                        enabled = permissionsGranted,
+                        colors = SwitchDefaults.colors(
+                            disabledThumbColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.38f),
+                            disabledTrackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.12f)
+                        )
+                    )
+                }
+                
+                Text(
+                    "Blocks distracting apps except during break periods. Requires special permissions.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.alpha(if (permissionsGranted) 1f else 0.5f)
+                )
+
+                if (!permissionsGranted) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { requestUsageStatsPermission(context) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = if (hasUsage) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
+                    ) {
+                        Text(if (hasUsage) "Usage Access: Granted" else "Grant Usage Access")
+                    }
+
+                    Button(
+                        onClick = { requestOverlayPermission(context) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = if (hasOverlay) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
+                    ) {
+                        Text(if (hasOverlay) "Overlay: Granted" else "Grant Overlay Permission")
+                    }
+                }
+            }
         }
     }
 
@@ -433,10 +599,37 @@ fun SettingsScreen(
     }
 }
 
+private fun hasUsageStatsPermission(context: Context): Boolean {
+    val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+    val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        appOps.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+    } else {
+        @Suppress("DEPRECATION")
+        appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), context.packageName)
+    }
+    return mode == AppOpsManager.MODE_ALLOWED
+}
+
+private fun requestUsageStatsPermission(context: Context) {
+    context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    })
+}
+
+private fun hasOverlayPermission(context: Context): Boolean {
+    return Settings.canDrawOverlays(context)
+}
+
+private fun requestOverlayPermission(context: Context) {
+    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    context.startActivity(intent)
+}
+
 @Preview(showBackground = true)
 @Composable
 fun TimerPreview() {
     TimerAppTheme {
-        TimerScreen(30, 5, true, {}, {})
+        TimerScreen(30, 5, true, false, {}, {})
     }
 }
